@@ -1,0 +1,122 @@
+---
+- name: API Virtual Machine is ready
+  hosts: all
+  sudo: yes
+  tasks:
+    - name: APT | Ensure sources are signed
+      apt_key: url={{ item }} state=present
+      with_items:
+        - http://www.dotdeb.org/dotdeb.gpg
+
+    - name: APT | Ensure sources are installed
+      apt_repository: repo='{{ item.archive_type }} {{ item.repository_url }} {{ item.distribution }} {{ item.components }}' state=present
+      with_items:
+        - { archive_type: "deb",     repository_url: "http://packages.dotdeb.org", distribution: "wheezy",       components: "all" }
+        - { archive_type: "deb-src", repository_url: "http://packages.dotdeb.org", distribution: "wheezy",       components: "all" }
+        - { archive_type: "deb",     repository_url: "http://packages.dotdeb.org", distribution: "wheezy-php56", components: "all" }
+        - { archive_type: "deb-src", repository_url: "http://packages.dotdeb.org", distribution: "wheezy-php56", components: "all" }
+
+    - name: APT | Ensure system is updated
+      apt: upgrade=dist
+
+    - name: APT | Ensure all packages are updated
+      apt: update_cache=yes
+
+    - name: APT | Ensure locales are installed
+      apt: name=locales-all state=present
+
+    - name: APT | Ensure base packages are installed
+      apt: name={{ item }} state=latest
+      with_items:
+        - vim
+        - build-essential
+        - gettext
+        - pslib1
+        - pslib-dev
+        - re2c
+        - pkg-config
+        - apache2
+        - apache2-mpm-prefork
+        - php5
+        - php5-dev
+        - php-pear
+        - php5-curl
+        - php5-gd
+        - php5-tidy
+        - php5-imagick
+        - php5-mysqlnd
+        - php5-msgpack
+        - php5-cli
+        - php5-apcu
+        - php5-mcrypt
+        - mysql-client
+        - unzip
+
+    - name: PHP | Installing XDEBUG
+      shell: "pecl install -f xdebug"
+
+    - name: PHP | Ensure PHP configuration is set up properly
+      ini_file: dest=/etc/php5/{{ item[0] }}/php.ini section=PHP option={{ item[1].option }} value={{ item[1].value }}
+      with_nested:
+        - [ "apache2", "cli" ]
+        - [
+          { option: "memory_limit", value: "128M" },
+          { option: "date.timezone", value: "Europe/Madrid" },
+          { option: "default_charset", value: "iso-8859-1" }
+        ]
+
+    - name: PHP | Fetch PHP extension dir
+      shell: "php -i | grep -i '^extension_dir' | awk '{print $3}'"
+      register: php_extension_dir
+
+    - name: PHP | Ensure PHP modules are set up properly
+      template: src=templates/php/modules/{{ item }}.ini dest=/etc/php5/mods-available/{{ item }}.ini
+      with_items:
+        - xdebug
+        - msgpack
+
+    - name: PHP | Ensure xdebug module is enabled
+      shell: php5enmod xdebug
+
+    - name: ENVIRONMENT | Ensure hosts file is set
+      template: src=templates/environment/hosts dest=/etc/hosts
+
+    - name: APACHE | Ensure is listening on the proper IP
+      template: src=templates/apache/ports.apache.conf dest=/etc/apache2/ports.conf
+
+    - name: APACHE | Ensure atrapalo virtual host file is installed
+      template: src=templates/apache/api.local.apache.conf dest=/etc/apache2/sites-available/api.local
+
+    - name: APACHE | Ensure modules are enabled
+      apache2_module: name={{ item }} state=present
+      with_items:
+        - php5
+        - rewrite
+
+    - name: APACHE | Ensure default apache site is disabled
+      shell: a2dissite default
+
+    - name: APACHE | Ensure Virtual hosts are up
+      shell: a2ensite {{ item }}
+      with_items:
+        - api.local
+
+    - name: APACHE | Ensure is running as a vagrant user
+      shell: sed -i 's/export APACHE_RUN_USER=www\-data/export APACHE_RUN_USER=vagrant/g' /etc/apache2/envvars
+
+    - name: APACHE | Update permissions (@todo)
+      shell: chown -R vagrant:vagrant /var/lock/apache2/
+
+    - name: ENVIRONMENT | Ensure log files
+      file: path=/var/www/logs/ state=directory owner=vagrant group=vagrant
+
+    - name: ENVIRONMENT | Ensure services are enabled
+      service: name={{ item }} enabled=yes
+      with_items:
+        - apache2
+
+    - name: ENVIRONMENT | Ensure services are up
+      service: name={{ item }} state=restarted
+      with_items:
+        - apache2
+      ignore_errors: yes
